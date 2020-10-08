@@ -1,0 +1,209 @@
+from keras.models import Sequential, load_model
+from keras.layers import LSTM
+from keras.layers import Dense, Dropout
+import matplotlib.pyplot as plt
+from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import MinMaxScaler
+from matplotlib.font_manager import FontProperties  # 为画图成功显示中文做准备
+import numpy as np
+import pandas as pd
+from numpy import *
+import keras
+import math
+
+def load_stock():  # 载入数据
+    filename = '601857.csv'
+    data = pd.read_csv(filename, header=0, encoding='gbk')
+    predictor_names = ["收盘价"]
+    data_ori = np.asarray(data[predictor_names], dtype='float32')  # 得到了原始的数据，明确第一个值为预测值
+    # print(data_ori)
+    # 对数据进行归一化处理
+    scaler = MinMaxScaler(feature_range=(0, 1))
+    data_std = scaler.fit_transform(data_ori)
+    # # print(data_std)
+    # # 分割出训练集和测试集
+    # train_size = int(len(data_std) * 0.8)
+    # test_size = len(data_std) - train_size
+    # train, test = data_std[:train_size, :], data_std[train_size:, :]
+    return  data_std
+    # print(train.shape)
+    # print(test.shape)
+
+# LSTM的核心步骤，进行滑窗处理，建立相应的数据集,timesteps表示用多少个以前的数据去预测下一个数据,同时划分测试集和训练集
+def create_data(data, timesteps):
+    # amount_feature = len(data.columns)
+    # data = data.as_matrix()
+    sequence_length = timesteps + 1
+    result = []
+    for index in range(len(data) - sequence_length):
+        result.append(data[index: index + sequence_length])
+    result = np.array(result)
+    row = round(0.9 * result.shape[0])  # 划分训练集和测试集
+    train = result[:int(row), :]
+    test = result[int(row):, :]
+    x_train = train[:, :-1]  # 除去最后一天的数据
+    y_train = train[:, -1][:, 0]  # 最后一天的收盘价
+    x_test = test[:, :-1]
+    y_test = test[:, -1][:, 0]
+    return x_train, y_train, x_test, y_test
+
+# 模型的搭建
+def build_model2(layers, neurons, d):
+    model = Sequential()
+
+    model.add(LSTM(neurons[0], input_shape=(layers[1], layers[0]), return_sequences=True))
+    model.add(Dropout(d))
+
+    model.add(LSTM(neurons[1], input_shape=(layers[1], layers[2]), return_sequences=False))
+    model.add(Dropout(d))
+
+    model.add(Dense(neurons[2], kernel_initializer="uniform", activation='relu'))
+    model.add(Dense(neurons[3], kernel_initializer="uniform", activation='linear'))
+    # model = load_model('my_LSTM_stock_model1000.h5')
+    adam = keras.optimizers.Adam(decay=0.2)
+    model.compile(loss='mse', optimizer='adam', metrics=['accuracy'])
+    model.summary()
+    return model
+
+# 利用mse和rmse对模型进行评价
+def model_score(model, X_train, y_train, X_test, y_test):
+    trainScore = model.evaluate(X_train, y_train, verbose=0)
+    print('Train Score: %.5f MSE (%.2f RMSE)' % (trainScore[0], math.sqrt(trainScore[0])))
+
+    testScore = model.evaluate(X_test, y_test, verbose=0)
+    print('Test Score: %.5f MSE (%.2f RMSE)' % (testScore[0], math.sqrt(testScore[0])))
+    return trainScore[0], testScore[0]
+
+# 预测误差的百分比
+def percentage_difference(model, X_test, y_test, X_train):
+    percentage_diff = []
+
+    p = model.predict(X_test)
+    for u in range(len(y_test)):  # for each data index in test data
+        pr = p[u][0]  # pr = prediction on day u
+
+        percentage_diff.append((pr - y_test[u] / pr) * 100)
+
+    q = model.predict(X_train)
+    q = concatenate((q, p), axis=0)
+    return p, q # 返回的是预测的结果
+
+# 对数据进行反归一化
+def denormalize(stock_name, normalized_value):
+    data = pd.read_csv(stock_name, header=0, encoding='gbk')
+    predictor_names = ["收盘价", '最高价', '最低价', '开盘价', '前一天收盘价', '涨跌额',
+                       '涨跌幅', '换手率', '成交量', '成交金额', '总市值', '流通市值']
+    data = np.asarray(data['收盘价'], dtype='float32')
+
+    df = data.reshape(-1, 1)
+    normalized_value = normalized_value.reshape(-1, 1)
+
+    # return df.shape, p.shape
+    min_max_scaler = MinMaxScaler(feature_range=(0, 1))
+    a = min_max_scaler.fit_transform(df)
+    new = min_max_scaler.inverse_transform(normalized_value)
+    return new
+
+# 对未来数据走势的预报功能
+def creat_forecast(data):  # data为输入进来的数据，look_back为用多少个以前的数据去预报未来的数据
+    forecast = []
+    for i in range(len(data) - 1):
+        forecast.append(data[i+1:])
+    return np.array(forecast)
+
+# 堆栈核心操作
+def duizhan(look_back, stock_name):
+    forecast_series = []
+    dataset = pd.read_csv(stock_name, header=0, encoding='gbk')
+    predictor_names = ["收盘价"]
+    dataset = np.asarray(dataset[predictor_names], dtype='float32')
+    print(dataset)
+    print(dataset.shape)
+    for i in range(5):
+        d = dataset[-(look_back + 1):]
+        p1 = creat_forecast(d)
+        p2 = np.reshape(p1, (p1.shape[0], 1, 1))
+        predict = model.predict(p2)
+        predict = predict.flatten()  # 扁平化，将二维的数据重新制作成一维的数据
+        predict = predict.tolist()
+        dataset = dataset.flatten()
+        dataset = dataset.tolist()
+        print(dataset)
+        print(predict)
+        forecast_series.append(predict)
+        dataset = np.hstack((dataset[:], predict))  # 实现数据库的更新
+    print(forecast_series)
+    return forecast_series
+
+# 可视化的操作
+def plot_result(stock_name, normalized_value_p, normalized_value_y_test, q, forecast_series):  # 画出的是测试集在模型里运行的结果
+    newp = denormalize(stock_name, normalized_value_p)
+    newy_test = denormalize(stock_name, normalized_value_y_test)
+    newq = denormalize(stock_name, q)
+    data = pd.read_csv(stock_name, header=0, encoding='gbk')
+    data_ori = np.asarray(data['收盘价'], dtype='float32')
+
+    font = FontProperties(fname=r"c:\windows\fonts\simsun.ttc", size=10)
+    plt.rcParams['font.family'] = ['SimHei']  # 可以使得图例的中文正常显示
+    plt.figure(1)
+    plt.plot(newp, color='red')
+    plt.plot(newy_test, color='blue')
+    plt.legend(['预测值', '真实值'])
+    plt.title('关于股价的预测', fontproperties=font)
+    plt.xlabel('时间', fontproperties=font)
+    plt.ylabel('收盘价', fontproperties=font)
+
+    plt.figure(2)
+    plt.plot(newq, color = 'red')
+    plt.plot(data_ori, color = 'blue')
+    plt.legend(['预测值', '真实值'])
+    plt.title('关于股价的预测', fontproperties=font)
+    plt.xlabel('时间', fontproperties=font)
+    plt.ylabel('收盘价', fontproperties=font)
+
+    plt.figure(3)
+    future = np.arange(data['日期'].shape[0] , data['日期'].shape[0] + 5, 1)
+    plt.plot(data_ori, color = 'blue')
+    plt.plot(future, forecast_series, color = 'green')
+    plt.legend(['真实值', '预报值'])
+    plt.title('预报未来五天的股价', fontproperties=font)
+    plt.xlabel('时间', fontproperties=font)
+    plt.ylabel('收盘价', fontproperties=font)
+    plt.show()
+
+
+# 参数的设置
+timesteps = 1
+d = 0.2
+shape = [1, timesteps, 1] # feature, window, output
+neurons = [1024, 512, 66, 1]
+epochs = 1000  # 迭代的次数
+look_back = 1
+
+stock_name = '601857.csv'
+data_std = load_stock()
+x_train, y_train, x_test, y_test = create_data(data_std, timesteps)
+model = build_model2(shape, neurons, d)
+
+# 模型的运行
+history=model.fit(
+    x_train,
+    y_train,
+    batch_size=40,
+    epochs=epochs,
+    validation_split=0.1,
+    verbose=1)
+
+model_score(model, x_train, y_train, x_test, y_test)
+# # 对训练过程的train和test的loss进行可视化
+# plt.plot(history.history['loss'], label='train')
+# plt.plot(history.history['val_loss'], label='test')
+# plt.legend()
+# plt.show()
+
+p, q = percentage_difference(model, x_test, y_test, x_train)  # 得到预测值
+f_result = duizhan(look_back, stock_name)
+
+plot_result(stock_name, p, y_test, q, f_result)
+
+model.save('LSTM_Stock_prediction-20200928.h5')  # 模型的保存
